@@ -76,14 +76,14 @@ function onMessage(msg) {
 
     case 'candidates':
       if (msg.tabId === currentTabId) {
-        renderCandidates(msg.list || []);
+        renderCandidates(msg.list || [], false);
         renderPermission(msg.needsPermission || []);
       }
       break;
 
     case 'scan-result':
       if (msg.tabId === currentTabId) {
-        renderCandidates(msg.list || []);
+        renderCandidates(msg.list || [], true);
         renderPermission(msg.needsPermission || []);
         if (msg.error) appendLog('[scan] ' + msg.error);
         else if (msg.scanned > 0) appendLog('スキャン: ' + msg.scanned + ' 件の URL を確認');
@@ -193,19 +193,29 @@ function bindEvents() {
 
   $('btnGrant').addEventListener('click', async () => {
     if (!needsPermission.length) return;
+
+    const origins = needsPermission.slice();
     $('btnGrant').disabled = true;
     let granted = false;
+    let error = '';
+
     try {
-      granted = await chrome.permissions.request({ origins: needsPermission });
+      granted = await chrome.permissions.request({ origins: origins });
     } catch (e) {
-      granted = false;
+      error = (e && e.message) || String(e);
     }
     $('btnGrant').disabled = false;
+
     if (granted) {
-      appendLog('配信元へのアクセスを許可しました。再検証します。');
+      $('permText').textContent = '許可しました。再検証しています...';
+      appendLog('許可: ' + origins.join(', '));
       send({ type: 'verify-pending', tabId: currentTabId });
+    } else if (error) {
+      $('permText').textContent = '許可ダイアログを開けませんでした: ' + error;
+      appendLog('[grant] ' + error);
     } else {
-      appendLog('許可されませんでした（URLタブ / 貼り付けタブはそのまま使えます）');
+      $('permText').textContent = '許可されませんでした（URLタブ / 貼り付けタブはそのまま使えます）';
+      appendLog('許可されませんでした: ' + origins.join(', '));
     }
   });
 
@@ -277,7 +287,7 @@ function requestCandidates() {
   }
 }
 
-function renderCandidates(list) {
+function renderCandidates(list, preferNewest) {
   const sel = $('candidates');
   const previous = sel.value;
   sel.textContent = '';
@@ -299,17 +309,21 @@ function renderCandidates(list) {
     if (item.verify === 'ok') { tag = '[確認済] '; note = '応答の先頭が #EXTM3U であることを確認済み'; }
     else if (item.verify === 'assumed') { tag = '[URL] '; note = 'URL が .m3u8 形式'; }
     else if (item.verify === 'need-permission') { tag = '[未確認] '; note = '配信元へのアクセス許可が必要です'; }
-    else if (item.verify === 'error') { tag = '[未確認] '; note = '取得に失敗しました（期限切れ・アクセス制限の可能性）'; }
+    else if (item.verify === 'error') { tag = '[失敗] '; note = '取得に失敗しました（期限切れ・アクセス制限の可能性）'; }
 
     o.textContent = tag + shortUrl(item.url);
     o.title = note + '\n' + item.url;
     sel.appendChild(o);
   }
 
-  const keep = list.some((i) => i.url === previous);
-  sel.value = keep ? previous : list[0].url;
-  $('url').value = sel.value;
-  if (!$('outName').value.trim()) $('outName').value = suggestName(sel.value);
+  // スキャン直後は最新（先頭）を選ぶ。それ以外は選択中のものを維持する
+  const exists = list.some((i) => i.url === previous);
+  sel.value = (preferNewest || !exists) ? list[0].url : previous;
+
+  if ($('url').value !== sel.value) {
+    $('url').value = sel.value;
+    if (!$('outName').value.trim()) $('outName').value = suggestName(sel.value);
+  }
 }
 
 /* 配信元の許可が必要なときにバナーを出す */

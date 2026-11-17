@@ -18,7 +18,7 @@ const D = self.M3U8Detect;
 
 const HOST_NAME = 'com.local.m3u8mp4';
 const MAX_PER_TAB = 15;
-const PROBE_LIMIT = 8;
+const PROBE_LIMIT = 12;
 const VERIFY_TTL = 15 * 60 * 1000;
 
 /** @type {Map<number, Array<{url: string, ts: number, source: string, verify: string}>>} */
@@ -171,7 +171,7 @@ function addCandidate(tabId, url, source, verify) {
     return;
   }
 
-  list.unshift({ url: url, ts: Date.now(), source: source || 'hint', verify: verify || 'assumed' });
+  list.push({ url: url, ts: Date.now(), source: source || 'hint', verify: verify || 'assumed' });
   if (list.length > MAX_PER_TAB) list.length = MAX_PER_TAB;
   candidatesByTab.set(tabId, list);
   broadcast({ type: 'candidates', tabId: tabId, list: list, needsPermission: collectNeedPermission(tabId) });
@@ -253,8 +253,7 @@ async function runScan(tabId) {
   candidatesByTab.delete(tabId);
   broadcast({ type: 'candidates', tabId: tabId, list: [], needsPermission: [] });
 
-  for (const u of picked.playlists) addCandidate(tabId, u, 'url', 'assumed');
-
+  // ヒント（拡張子なし）を先に検証し、スキャン順＝新しい順を保って並べる
   const hints = picked.hints.slice(0, PROBE_LIMIT);
   const statuses = await Promise.all(hints.map((u) => verifyUrl(u)));
 
@@ -262,6 +261,9 @@ async function runScan(tabId) {
     if (statuses[i] === 'no') continue;
     addCandidate(tabId, hints[i], 'hint', statuses[i]);
   }
+
+  // .m3u8 形式の候補はその後ろに並べる
+  for (const u of picked.playlists) addCandidate(tabId, u, 'url', 'assumed');
 
   return { scanned: urls.length, error: error, needsPermission: collectNeedPermission(tabId) };
 }
@@ -290,7 +292,12 @@ async function scanPage(tabId) {
         if (u && out.indexOf(u) < 0 && out.length < 60) out.push(u);
       };
       try {
-        for (const e of performance.getEntriesByType('resource')) push(e.name);
+        var entries = performance.getEntriesByType('resource') || [];
+        var sorted = [];
+        for (var i = 0; i < entries.length; i++) sorted.push(entries[i]);
+        // 新しい順（SPAで動画を切り替えても最新のプレイリストが先頭に来るように）
+        sorted.sort(function (a, b) { return (b.startTime || 0) - (a.startTime || 0); });
+        for (var j = 0; j < sorted.length; j++) push(sorted[j].name);
       } catch (e) { /* ignore */ }
       try {
         const html = document.documentElement ? document.documentElement.innerHTML : '';
