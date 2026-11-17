@@ -1,5 +1,5 @@
 ---
-title: プライバシーポリシー | m3u8 to MP4 (local ffmpeg)
+title: プライバシーポリシー
 ---
 
 # プライバシーポリシー
