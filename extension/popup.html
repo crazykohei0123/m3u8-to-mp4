@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>m3u8 to MP4</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app">
+    <header class="head">
+      <div class="brand">m3u8 <span class="arrow">&rarr;</span> MP4</div>
+      <div class="host"><span id="hostDot" class="dot"></span><span id="hostText">未接続</span></div>
+    </header>
+
+    <details class="settings" id="settings">
+      <summary>設定（ffmpeg のパス・保存先）</summary>
+      <div class="grid">
+        <label class="full">ffmpeg.exe のパス
+          <div class="row">
+            <input id="ffmpegPath" type="text" spellcheck="false" placeholder="C:\ffmpeg\bin\ffmpeg.exe（空なら PATH から探索）">
+            <button id="btnProbe" class="ghost" type="button">確認</button>
+          </div>
+          <small id="probeResult" class="hint"></small>
+        </label>
+
+        <label class="full">出力フォルダ
+          <input id="outDir" type="text" spellcheck="false" placeholder="（空なら ユーザーの Videos\m3u8）">
+        </label>
+
+        <label class="full">ファイル名
+          <input id="outName" type="text" spellcheck="false" placeholder="video.mp4">
+        </label>
+
+        <label class="full check">
+          <input id="useCookies" type="checkbox"> サイトの Cookie を ffmpeg に渡す（ログイン必須のサイト向け）
+        </label>
+
+        <label class="full">Referer（任意）
+          <input id="referer" type="text" spellcheck="false" placeholder="https://example.com/">
+        </label>
+
+        <label class="full">User-Agent（任意）
+          <input id="userAgent" type="text" spellcheck="false" placeholder="（空なら ffmpeg 既定）">
+        </label>
+
+        <label class="full">拡張ID（ネイティブホスト登録用）
+          <div class="row">
+            <input id="extId" type="text" readonly spellcheck="false">
+            <button id="btnCopyId" class="ghost" type="button">コピー</button>
+          </div>
+          <small id="copyResult" class="hint">install.ps1 に渡すIDです（通常は自動検出されます）</small>
+        </label>
+      </div>
+    </details>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="auto" type="button">自動検出</button>
+      <button class="tab" data-tab="url" type="button">URL</button>
+      <button class="tab" data-tab="text" type="button">貼り付け</button>
+    </div>
+
+    <section id="pane-auto" class="pane">
+      <select id="candidates" size="4"></select>
+      <div class="row">
+        <button id="btnScan" class="ghost" type="button">ページを再スキャン</button>
+        <small class="hint">動画の再生を一度開始すると検出されます</small>
+      </div>
+    </section>
+
+    <section id="pane-url" class="pane" hidden>
+      <input id="url" type="text" spellcheck="false" placeholder="https://.../streaming.m3u8">
+    </section>
+
+    <section id="pane-text" class="pane" hidden>
+      <textarea id="text" rows="5" spellcheck="false" placeholder="#EXTM3U ... （m3u8 の中身を貼り付け）"></textarea>
+      <input id="baseUrl" type="text" spellcheck="false" placeholder="基準URL（相対パス解決用・任意）">
+    </section>
+
+    <div class="actions">
+      <button id="btnStart" class="primary" type="button">変換開始</button>
+      <button id="btnCancel" class="ghost" type="button" disabled>中止</button>
+    </div>
+
+    <section class="progress">
+      <div class="bar"><div id="barFill"></div></div>
+      <div class="stats">
+        <span id="stateText">待機中</span>
+        <span id="detailText"></span>
+      </div>
+      <pre id="log" class="log"></pre>
+      <div class="row end">
+        <button id="btnOpen" class="ghost" type="button" hidden>フォルダを開く</button>
+      </div>
+    </section>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

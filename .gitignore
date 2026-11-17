@@ -1,0 +1,19 @@
+# ビルド成果物
+dist/
+*.zip
+
+# 端末固有 / ビルド生成物（コミットしない）
+native-host/node-path.txt
+native-host/com.local.m3u8mp4.json
+native-host/m3u8host.exe
+native-host/launcher.log
+native-host/test-out*.txt
+native-host/test-exe.*
+
+# 依存
+node_modules/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
