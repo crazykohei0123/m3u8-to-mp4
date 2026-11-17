@@ -2,6 +2,8 @@
 
 最終更新: 2026-11-17 / manifest version: 1.1.1
 
+- 「プライバシーへの取り組み」タブの回答一式 → [`store/privacy-practices.md`](privacy-practices.md)
+
 ---
 
 ## 1. 短い説明（132文字以内）
@@ -100,10 +102,8 @@ Detect HLS (m3u8) playlists on the current page and convert them to MP4 using th
 | スロット | ファイル | 状態 |
 |---|---|---|
 | ストア アイコン (128×128) | `extension/icons/icon128.png` | ✅ 同梱済み |
-| スクリーンショット 1 | `store/screenshots/screenshot-01.png` (1280×800) | ✅ |
-| スクリーンショット 2 | `store/screenshots/screenshot-04.png` (1280×800) | ✅ |
-| スクリーンショット 3 | `store/screenshots/screenshot-05.png` (1280×800) | ✅ |
-| （参考） | `screenshot-02.png` (546×568) / `screenshot-03.png` (547×453) | ❌ 1280×800 か 640×400 に作り直しが必要 |
+| スクリーンショット 1 | `store/screenshots/screenshot1.jpg` (1280×800) | ✅ |
+| スクリーンショット 2 | `store/screenshots/screenshot2.jpg` (1280×800) | ✅ |
 | プロモタイル (440×280) | 任意 | 未作成 |
 
 - カテゴリ: **ツール / Tools**
