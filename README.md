@@ -8,12 +8,14 @@
 
 ```
 [Chrome / Vivaldi 拡張 (MV3)]
-  ページ内 inject.js (MAIN world) ── ページの XHR/fetch を監視し本文が #EXTM3U なら報告
-        │ window.postMessage
+  popup (クリック = activeTab 付与)
+        │ chrome.runtime (port)
         ▼
-  content.js (ISOLATED) ── chrome.runtime.sendMessage
-        ▼
-  background.js (service worker) ── 候補を集約（必要なら応答本文を検証）
+  background.js (service worker)
+        ├─ chrome.scripting.executeScript で現在のタブを1回だけ走査
+        ├─ 候補URLを分類（lib/detect.js）
+        ├─ 拡張子なしURLは「配信元originの任意ホスト権限」がある場合のみ fetch 検証
+        │   （無ければポップアップに許可ボタンを表示）
         │ chrome.runtime.connectNative()
         ▼
   [m3u8host.exe]  ← Native Messaging ホスト
@@ -24,20 +26,28 @@
 
 ---
 
-## 1.0 自動検出の仕組み（3段構え）
+## 1.0 検出の仕組み（v1.2.0・最小権限）
 
-| 経路 | 対象 | 追加通信 |
+`host_permissions: <all_urls>` / `webRequest` / `tabs` は使いません。**アイコンを押したとき（activeTab）だけ**ページを読み取ります。
+
+| 経路 | 対象 | 権限 |
 |---|---|---|
-| ① URLパターン | `*.m3u8` / `format=m3u8` | なし |
-| ② ページ内フック（`inject.js`, MAIN world） | hls.js 等が XHR/fetch で取得した**本文が `#EXTM3U` のもの**。**URLに拡張子が無くても検出可**（例: `/channel_post_movies/982/streaming`） | なし（既存レスポンスを読むだけ） |
-| ③ 応答検証（service worker） | ②で拾えない経路（Worker/Service Worker 経由）や、`performance` タイムライン上の候補URL | 先頭64バイトだけ取得 |
+| ① URLパターン | `*.m3u8` / `format=m3u8` | activeTab（スキャンのみ） |
+| ② 応答検証 | `streaming` / `playlist` / `hls` 等を含む**拡張子なしURL** | **任意のホスト権限**（配信元のみ・ユーザーが許可した場合） |
+| ③ 手動 | URL直接入力 / m3u8貼り付け | なし |
 
-③は `streaming` / `playlist` / `manifest` / `hls` / `master` を含むURLだけを対象にし、1タブ最大8件まで、
-結果は15分キャッシュします。ポップアップの候補には `[自動]`（②）/`[検証]`（③）/`[URL]`（①）が付きます。
+②は、プレイリストの応答が `Content-Type: text/plain` で返るサイト（例: `/channel_post_movies/982/streaming`）では
+URL だけでは判別できないため、**応答の先頭64バイトが `#EXTM3U` か**を確認します。
+この確認は拡張の service worker から `fetch` するため、**配信元 origin のホスト権限**が必要です
+（`activeTab` が与えるのはタブのメインフレームoriginだけなので、別ホストのAPIには及びません）。
+
+そこで本拡張は、インストール時には権限を要求せず、候補が見つかったときに
+ポップアップへ **「配信元へのアクセスを許可」** ボタンを表示し、
+`chrome.permissions.request({ origins: ["https://api-..../*"] })` で**その配信元だけ**を許可します。
+許可しなくても ③ の手動入力で変換できます。
 
 > **なぜ Content-Type では判定しないのか**
-> この配信元の m3u8 は `Content-Type: text/plain; charset=utf-8` で返るため、ヘッダでは判別できません。
-> そのため本文の先頭 `#EXTM3U` で判定しています。
+> 対象サイトの m3u8 は `Content-Type: text/plain; charset=utf-8` で返るため、ヘッダでは判別できません。
 
 ---
 
@@ -114,10 +124,12 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 ## 4. 使い方
 
-1. 対象ページで動画の再生を開始（hls.js が m3u8 を読むので検出されます）
-2. 拡張アイコンをクリック → **自動検出** に m3u8 の候補が並ぶ
-3. 必要なら **URL** タブで直接指定、**貼り付け** タブで m3u8 の中身を貼り付け（相対パスは「基準URL」で解決）
-4. **変換開始** → 進捗・速度・残り時間が表示され、完了後に **フォルダを開く**
+1. 対象ページで動画の再生を開始（プレイリストの通信が発生します）
+2. ツールバーの拡張アイコンをクリック（この操作で `activeTab` が付与され、ページを走査します）
+3. **自動検出** に候補が並ぶ（`[確認済]` / `[URL]` / `[未確認]`）
+   - `[未確認]` は「配信元へのアクセスを許可」を押すと `#EXTM3U` 判定ができます
+4. 候補を選んで **変換開始** → 進捗・速度・残り時間が表示され、完了後に **フォルダを開く**
+5. 候補が出ない場合は **URL** タブに直接入力、または **貼り付け** タブ（相対パスは「基準URL」で解決）
 
 ### 設定項目
 | 項目 | 説明 |
@@ -155,7 +167,7 @@ stderr の `Duration:` から % を算出しています。
 
 | 症状 | 対処 |
 |---|---|
-| **拡張子なしのm3u8（`/channel_post_movies/982/streaming` 等）が候補に出ない** | v1.1 で検出対応。①動画を一度再生 → ②ポップアップを開く → ③「ページを再スキャン」。出ない場合は URL タブに直接入力するか、貼り付けタブを使用 |
+| **拡張子なしのm3u8（`/channel_post_movies/982/streaming` 等）が `[未確認]` になる** | バナーの**「配信元へのアクセスを許可」**を押してください（`#EXTM3U` 判定に配信元originのホスト権限が必要）。許可しなくてもURLタブ／貼り付けタブで変換できます |
 | ヘッダが「接続エラー」/ ログに `Specified native messaging host not found` | `install.ps1` が未実行、または拡張IDが変わった。`install.ps1` を再実行（拡張フォルダのパスを変えるとIDも変わります） |
 | ホストは繋がるが ffmpeg が動かない | 設定の **ffmpeg のパス** を確認 → **確認** ボタンで `OK:` になるか。`native-host\launcher.log` にエラーが残ります |
 | `exit 4294967291`（= -5）+ `Not detecting m3u8/hls with non standard extension and non standard mime type` | 拡張子なし・`text/plain` のプレイリスト。**v1.1 のホストは自動で `-f hls` を付けます**。古い `host.js` のままなら再実行/更新してください |
@@ -182,12 +194,12 @@ node test\test-host.js --exe    # m3u8host.exe 経由（Chrome と同じ起動�
 ```
 テスト内容: ping / defaults / ffmpeg 検出 / **テスト用HLSを生成して実際にMP4へ変換** / 相対URL解決 / 入力エラー / ffmpegパス不正。
 
-ページ内フック（`inject.js` / `content.js`）の検出ロジックは、Node の `vm` で擬似ブラウザ環境を作って検証します。
+ページ内フックの代わりに、検出まわりの純関数を `extension/lib/detect.js` に分離し、Node でテストします。
 ```powershell
-node test-inject.js
+node test-detect.js
 ```
-テスト内容: XHR(fetch)で**拡張子なしの `#EXTM3U`** を検出 / セグメント(`arraybuffer`)と非プレイリストを無視 /
-二重フックしない / content.js の転送・重複排除・外部オリジン無視 / performance からの候補抽出。
+テスト内容: `.m3u8`/`format=m3u8` 判定 / 拡張子なしURLのヒント判定 / `.ts`・`.keyfile`・js/css の除外 /
+`originPattern`（`chrome.permissions` 用）/ `#EXTM3U` 判定（BOM・空白許容）/ 分類と上限。
 
 UI の要素IDと JS の参照が一致しているかは次で確認できます。
 ```powershell
@@ -219,7 +231,7 @@ node native-host\test\live-check.js "https://…/streaming"
 | **ネイティブホストは同梱できない** | 拡張のパッケージに入れられるのは拡張だけ。`m3u8host.exe` はユーザーが別途インストールする必要がある | 未接続時にポップアップへ登録手順を表示。README/掲載文に手順を明記 |
 | **拡張IDが固定される** | ストア版のIDは開発者ダッシュボードで決まる。開発版（unpacked）のIDとは別 | `install.ps1` が**ストア版・開発版の両IDを自動検出**して `allowed_origins` に登録。ポップアップにID表示＋コピー機能 |
 | **Windows 専用** | ホストは PowerShell + Node + .NET で動く（macOS/Linux 不可） | 掲載文に「Windows のみ」と明記 |
-| **権限が強い** | `<all_urls>` / `nativeMessaging` / `webRequest` / `cookies` | 下記の「権限の正当化」文をダッシュボードに記入 |
+| **権限が強い** | 必須は `activeTab` / `scripting` / `storage` / `nativeMessaging` のみ。`cookies` とホスト権限は**任意**（実行時に要求） | 下記の「権限の正当化」文をダッシュボードに記入 |
 | **ポリシー上のリスク** | 動画のダウンロード系は通報されやすい（著作権・サイト規約） | 掲載文を「ユーザーがアクセス権を持つHLSの変換」に限定して表現。DRM非対応であることを明記 |
 
 ### 8-1. アカウント準備（初回のみ）
@@ -272,28 +284,8 @@ ffmpeg で MP4 に変換して保存します。動画データは端末内で�
 ```
 
 **権限の正当化（英語・ダッシュボード入力用）**
-```
-- host permissions (<all_urls>):
-  To detect HLS playlist requests on any site the user is watching, and to verify a
-  playlist by reading the first bytes of an extension-less URL. The extension never
-  uploads page content.
 
-- nativeMessaging:
-  Required to start the user's locally installed ffmpeg.exe (a small native host
-  relays messages). No data leaves the device.
-
-- webRequest:
-  Observational only; used to notice .m3u8 requests and extension-less playlist URLs.
-
-- cookies (optional feature, off by default):
-  When the user explicitly enables "pass cookies", the cookies of the current site
-  are handed to the local ffmpeg process so that login-protected playlists can be
-  fetched. They are never transmitted anywhere else.
-
-- tabs / scripting:
-  To identify the active tab and to scan the current page for playlist URLs when the
-  user clicks "rescan".
-```
+v1.2.0 の内容は [`store/privacy-practices.md`](store/privacy-practices.md) の「6. 審査で追加質問が来た場合の回答テンプレート」を使用してください（必須権限は `activeTab` / `scripting` / `storage` / `nativeMessaging` のみ、`cookies` とホスト権限は任意）。
 
 **単一目的（Single purpose）の記述**
 ```

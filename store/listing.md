@@ -1,6 +1,6 @@
 # Chrome ウェブストア 掲載情報（コピペ用）
 
-最終更新: 2026-11-17 / manifest version: 1.1.1
+最終更新: 2026-11-17 / manifest version: 1.2.0
 
 - 「プライバシーへの取り組み」タブの回答一式 → [`store/privacy-practices.md`](privacy-practices.md)
 
@@ -25,11 +25,12 @@
 ffmpeg で MP4 に変換・保存します。動画データは端末内でのみ処理され、外部サーバーへは送信しません。
 
 ■ 特長
-・URL に .m3u8 が無いプレイリストも検出（応答本文の #EXTM3U で判定）
+・URL に .m3u8 が無いプレイリストにも対応（応答本文の #EXTM3U で判定）
 ・再エンコードなし（-c copy）で高速・無劣化
 ・進捗・速度・サイズを表示し、完了後はボタン1つでフォルダを開けます
 ・AES-128 / SAMPLE-AES（MPEG-TS）の復号は ffmpeg に任せるため追加設定は不要
 ・DRM（Widevine / FairPlay など）には対応しません
+・閲覧中のページを常時監視しません（アイコンを押したときだけ読み取ります）
 
 ■ 必要なもの（Windows のみ）
 1. Node.js（LTS）
@@ -44,8 +45,10 @@ ffmpeg で MP4 に変換・保存します。動画データは端末内での�
 
 ■ 使い方
 1. 動画ページで再生を開始します
-2. ツールバーのアイコンをクリックします
-3. 「自動検出」に表示されたプレイリストを選び「変換開始」を押します
+2. ツールバーのアイコンをクリックします（この操作でページの読み取りが許可されます）
+3. 候補が表示されたら選んで「変換開始」を押します
+   ・初回は「配信元へのアクセスを許可」が出ることがあります。許可すると、
+     拡張子なしプレイリストかどうかを自動判定できます（許可しなくても変換は可能）
    ・URL が分かっている場合は「URL」タブに直接入力できます
    ・m3u8 の中身を持っている場合は「貼り付け」タブが使えます
 
@@ -73,26 +76,29 @@ Detect HLS (m3u8) playlists on the current page and convert them to MP4 using th
 ## 4. 権限の正当化（Permissions justification / 英語）
 
 ```
-- host permissions (<all_urls>):
-  To detect HLS playlist requests on any site the user is viewing, and to verify an
-  extension-less playlist URL by reading the first bytes of its response. No page content
-  is uploaded anywhere.
+- activeTab:
+  The page is read only when the user clicks the toolbar icon (one-shot). We collect
+  candidate URLs from performance entries and the page HTML. No background monitoring.
+
+- scripting:
+  Used to run that one-shot collection in the clicked tab (chrome.scripting.executeScript).
+
+- storage:
+  Stores the user's settings locally (chrome.storage.local). No sync, no transmission.
 
 - nativeMessaging:
-  Required to start the user's locally installed ffmpeg.exe through a small native host.
+  Starts the user's locally installed ffmpeg.exe through a small native host.
   No data leaves the device.
 
-- webRequest:
-  Observational only; used to notice .m3u8 requests and extension-less playlist URLs.
+- optional: cookies (off by default, requested only when the user enables "pass cookies")
+  Cookies of the current site are handed to the local ffmpeg process and never stored or
+  transmitted anywhere else.
 
-- cookies (optional, off by default):
-  When the user explicitly enables "pass cookies", cookies of the current site are handed
-  to the local ffmpeg process so that login-protected playlists can be fetched. They are
-  never transmitted anywhere else.
-
-- tabs / scripting:
-  To identify the active tab and to scan the current page for playlist URLs when the user
-  clicks "rescan".
+- optional: host permissions (requested only when the user clicks "allow media host")
+  Playlist URLs without a .m3u8 extension and without an mpegurl content type can only be
+  identified by reading the first 64 bytes of the response. We request only the specific
+  origin(s) of the detected media host(s). Declining keeps manual URL/paste conversion
+  fully functional. No page content or browsing history is collected or transmitted.
 ```
 
 ---

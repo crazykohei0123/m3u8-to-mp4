@@ -11,6 +11,7 @@ let activePane = 'auto';
 let job = { active: false, percent: null, outTimeMs: 0, durationMs: 0, speed: null, size: 0, output: null };
 let lastOutput = null;
 let saveTimer = null;
+let needsPermission = [];
 
 init();
 
@@ -74,7 +75,20 @@ function onMessage(msg) {
       break;
 
     case 'candidates':
-      if (msg.tabId === currentTabId) renderCandidates(msg.list || []);
+      if (msg.tabId === currentTabId) {
+        renderCandidates(msg.list || []);
+        renderPermission(msg.needsPermission || []);
+      }
+      break;
+
+    case 'scan-result':
+      if (msg.tabId === currentTabId) {
+        renderCandidates(msg.list || []);
+        renderPermission(msg.needsPermission || []);
+        if (msg.error) appendLog('[scan] ' + msg.error);
+        else if (msg.scanned > 0) appendLog('スキャン: ' + msg.scanned + ' 件の URL を確認');
+        else if (msg.scanned === 0) appendLog('スキャン: 候補が見つかりませんでした（再生してから再スキャンしてください）');
+      }
       break;
 
     case 'defaults':
@@ -172,8 +186,27 @@ function bindEvents() {
 
   $('btnScan').addEventListener('click', () => {
     $('btnScan').disabled = true;
+    setState('スキャン中...', '');
     send({ type: 'scan-page', tabId: currentTabId });
-    setTimeout(() => { $('btnScan').disabled = false; }, 1200);
+    setTimeout(() => { $('btnScan').disabled = false; }, 1500);
+  });
+
+  $('btnGrant').addEventListener('click', async () => {
+    if (!needsPermission.length) return;
+    $('btnGrant').disabled = true;
+    let granted = false;
+    try {
+      granted = await chrome.permissions.request({ origins: needsPermission });
+    } catch (e) {
+      granted = false;
+    }
+    $('btnGrant').disabled = false;
+    if (granted) {
+      appendLog('配信元へのアクセスを許可しました。再検証します。');
+      send({ type: 'verify-pending', tabId: currentTabId });
+    } else {
+      appendLog('許可されませんでした（URLタブ / 貼り付けタブはそのまま使えます）');
+    }
   });
 
   $('btnStart').addEventListener('click', start);
@@ -211,7 +244,21 @@ function bindEvents() {
   ['ffmpegPath', 'outDir', 'outName', 'referer', 'userAgent', 'baseUrl'].forEach((id) => {
     $(id).addEventListener('input', saveSettings);
   });
-  $('useCookies').addEventListener('change', saveSettings);
+  $('useCookies').addEventListener('change', async () => {
+    if ($('useCookies').checked) {
+      let granted = false;
+      try {
+        granted = await chrome.permissions.request({ permissions: ['cookies'] });
+      } catch (e) {
+        granted = false;
+      }
+      if (!granted) {
+        $('useCookies').checked = false;
+        appendLog('Cookie の権限が許可されませんでした（この機能は任意です）');
+      }
+    }
+    saveSettings();
+  });
 }
 
 function switchPane(name) {
@@ -222,11 +269,12 @@ function switchPane(name) {
 
 function requestCandidates() {
   send({ type: 'get-candidates', tabId: currentTabId });
-  setTimeout(() => {
-    if ($('candidates').options.length === 0 && typeof currentTabId === 'number') {
-      send({ type: 'scan-page', tabId: currentTabId });
-    }
-  }, 700);
+  if (typeof currentTabId === 'number') {
+    setState('スキャン中...', '');
+    send({ type: 'scan-page', tabId: currentTabId });
+  } else {
+    setState('このページでは使用できません', 'err');
+  }
 }
 
 function renderCandidates(list) {
@@ -245,9 +293,16 @@ function renderCandidates(list) {
   for (const item of list) {
     const o = document.createElement('option');
     o.value = item.url;
-    const tag = item.source === 'url' ? '[URL] ' : (item.source === 'hook' ? '[自動] ' : '[検証] ');
+
+    let tag = '[未確認] ';
+    let note = '内容を確認できていません（そのまま変換を試せます）';
+    if (item.verify === 'ok') { tag = '[確認済] '; note = '応答の先頭が #EXTM3U であることを確認済み'; }
+    else if (item.verify === 'assumed') { tag = '[URL] '; note = 'URL が .m3u8 形式'; }
+    else if (item.verify === 'need-permission') { tag = '[未確認] '; note = '配信元へのアクセス許可が必要です'; }
+    else if (item.verify === 'error') { tag = '[未確認] '; note = '取得に失敗しました（期限切れ・アクセス制限の可能性）'; }
+
     o.textContent = tag + shortUrl(item.url);
-    o.title = (item.source === 'url' ? 'URLが .m3u8 形式' : (item.source === 'hook' ? 'ページ内の通信から検出' : '応答本文を検証して検出')) + '\n' + item.url;
+    o.title = note + '\n' + item.url;
     sel.appendChild(o);
   }
 
@@ -255,6 +310,19 @@ function renderCandidates(list) {
   sel.value = keep ? previous : list[0].url;
   $('url').value = sel.value;
   if (!$('outName').value.trim()) $('outName').value = suggestName(sel.value);
+}
+
+/* 配信元の許可が必要なときにバナーを出す */
+function renderPermission(origins) {
+  needsPermission = Array.isArray(origins) ? origins : [];
+  const banner = $('permBanner');
+  if (!needsPermission.length) {
+    banner.hidden = true;
+    return;
+  }
+  const hosts = needsPermission.map((p) => String(p).replace(/^\w+:\/\//, '').replace(/\/\*$/, ''));
+  $('permText').textContent = '配信元（' + hosts.join(', ') + '）へのアクセスを許可すると、拡張子なしプレイリストかどうかを自動判定できます。';
+  banner.hidden = false;
 }
 
 /* ---------------- 開始 / 完了 ---------------- */

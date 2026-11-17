@@ -1,68 +1,55 @@
-# プライバシーへの取り組み（Chrome ウェブストア入力用）
+# プライバシーへの取り組み（Chrome ウェブストア入力用・v1.2.0）
 
-`[プライバシーへの取り組み]` タブの各欄に**そのまま貼り付け**できる文案です。
-（言語: 日本語で入力可。英語が必要な場合は末尾の English 版を使用）
+`[プライバシーへの取り組み]` タブに**そのまま貼り付け**できる文案です。
+
+## このバージョンの権限構成
+
+| 種別 | 権限 |
+|---|---|
+| 必須 | `activeTab` / `scripting` / `storage` / `nativeMessaging` |
+| 任意（実行時に要求） | `cookies`、ホスト権限 `*://*/*` のうち**実際に使う配信元のみ** |
+| 削除済み | `host_permissions: <all_urls>` / `webRequest` / `tabs` |
 
 ---
 
 ## 1. 単一用途の説明（Single purpose）
 
 ```
-この拡張機能の単一の目的は、「現在のページで再生されている HLS（m3u8）プレイリストを検出し、
-ユーザーの PC にインストールされた ffmpeg で MP4 に変換・保存する」ことです。
-検出・変換・保存以外の機能は提供しません。
+この拡張機能の単一の目的は、「現在のページで再生されている HLS（m3u8）プレイリストを検出し、ユーザーの PC にインストールされた ffmpeg で MP4 に変換・保存する」ことです。検出・変換・保存以外の機能は提供しません。
 ```
 
 ---
 
 ## 2. 権限を要求する理由
 
-### ホスト権限（`<all_urls>`）
+### activeTab
 ```
-動画の視聴ページは任意のドメインに存在し、事前に列挙できません。HLS プレイリストの取得要求を
-検出するため、すべてのサイトへのアクセスが必要です。
-読み取るのは (1) リクエスト URL と (2) URL に拡張子が無い場合の応答先頭 64 バイト
-（#EXTM3U かどうかの判定）のみです。ページ本文・入力内容・閲覧履歴を収集したり、
-外部へ送信したりすることはありません。より狭い権限では、ユーザーが視聴する任意のサイトで
-動作できないため、この権限が必要です。
-```
-
-### webRequest
-```
-HLS プレイリスト（.m3u8）への通信を監視し、変換候補を見つけるために使用します。
-リクエストの改変・ブロック・リダイレクトは行わず、URL の参照のみです。
-```
-
-### nativeMessaging
-```
-ユーザーの PC にインストールされた ffmpeg.exe を起動するため、ローカルのネイティブホスト
-（m3u8host.exe）と通信します。この通信は端末内で完結し、外部サーバーへの送信はありません。
+ユーザーがツールバーのアイコンを押したときだけ、そのタブのページを読み取ります。HLS プレイリストの候補 URL をページの performance 情報と HTML から収集し、変換対象を決めるために使用します。常時監視は行いません。
 ```
 
 ### scripting
 ```
-ポップアップの「ページを再スキャン」を押したときに、現在のタブの HTML と
-performance リソース一覧からプレイリスト URL を読み取るために使用します。
-実行はユーザー操作時のみで、読み取った値は URL の抽出にのみ使用します。
+上記の収集処理を、ユーザー操作があったタブに対してのみ実行するために使用します（chrome.scripting.executeScript）。対象は現在のタブのメインフレームに限られ、実行はユーザーがアイコンを押したときだけです。
 ```
 
 ### storage
 ```
-ffmpeg のパス、出力フォルダ、ファイル名、Referer、User-Agent などのユーザー設定を
-chrome.storage.local に保存するために使用します。端末内にのみ保存し、同期・外部送信は行いません。
+ffmpeg のパス、出力フォルダ、ファイル名、Referer、User-Agent などのユーザー設定を chrome.storage.local に保存するために使用します。端末内にのみ保存し、同期・外部送信は行いません。
 ```
 
-### tabs
+### nativeMessaging
 ```
-ポップアップで操作対象のタブ（現在アクティブなタブ）を特定し、そのタブで検出した
-プレイリスト候補を表示するために使用します。タブの URL やタイトルを外部へ送信することはありません。
+ユーザーの PC にインストールされた ffmpeg.exe を起動するため、ローカルのネイティブホスト（m3u8host.exe）と通信します。この通信は端末内で完結し、外部サーバーへの送信はありません。
 ```
 
-### cookies
+### cookies（任意・実行時に許可を要求）
 ```
-任意機能です。既定では無効です。ユーザーが設定画面で「サイトの Cookie を渡す」を明示的に
-ON にした場合に限り、変換対象サイトの Cookie を取得し、端末内で起動する ffmpeg に渡します。
-Cookie を保存したり、開発者や第三者へ送信したりすることは一切ありません。
+任意機能です。既定では無効で、インストール時には要求しません。ユーザーが設定画面で「サイトの Cookie を渡す」を ON にしたときに限り、変換対象サイトの Cookie を取得し、端末内の ffmpeg に渡します。Cookie を保存したり、外部へ送信したりすることは一切ありません。
+```
+
+### ホスト権限（任意・実行時に許可を要求）
+```
+インストール時には要求しません。URL に .m3u8 が含まれないプレイリスト（例: /channel_post_movies/982/streaming）は、応答本文の先頭が #EXTM3U かどうかを確認しないと判定できません。この確認のため、ユーザーがポップアップの「配信元へのアクセスを許可」を押したときに限り、検出された配信元の origin（例: https://api.example.com/*）だけを chrome.permissions.request() で要求します。読み取るのは応答の先頭 64 バイトのみで、ページ本文や閲覧履歴の収集・外部送信は行いません。許可しなくても、URL の直接入力・m3u8 の貼り付け・.m3u8 形式の URL の変換は利用できます。
 ```
 
 ---
@@ -70,30 +57,21 @@ Cookie を保存したり、開発者や第三者へ送信したりすること�
 ## 3. データの使用（Data usage）
 
 - **「このアイテムはユーザー データを収集しません」を選択**
-  （データの「収集」とは端末外への送信を指します。本拡張は設定を `chrome.storage.local` に
-  保存するだけで、開発者のサーバーは存在せず、いかなるデータも送信しません）
-- 参考: プライバシーポリシーの表と一致しています
-  → https://crazykohei0123.github.io/m3u8-to-mp4/
-- もし「ウェブ閲覧アクティビティ」等を選択する運用にする場合は、以下の注記を
-  「データ使用の説明」欄に追記してください：
-  ```
-  リクエスト URL はプレイリスト検出のためにブラウザ内で参照するのみで、保存・送信は行いません。
-  ```
+  （「収集」= 端末外への送信。本拡張は設定を `chrome.storage.local` に保存するだけで、
+  開発者のサーバーは存在せず、いかなるデータも送信しません）
+- プライバシーポリシー（同じ内容を記載）: https://crazykohei0123.github.io/m3u8-to-mp4/
 
 ---
 
 ## 4. デベロッパー プログラム ポリシーへの準拠表明
 
-`[プライバシーへの取り組み]` タブ最下部のチェックボックス
-（「データの使用が Google のデベロッパー プログラム ポリシーに準拠していることを表明します」）に
-チェックを入れてください。
+`[プライバシーへの取り組み]` タブ最下部のチェックボックスにチェックを入れてください。
 
 ---
 
 ## 5. パブリッシャーの連絡先メール
 
-`[設定]` ページ → **連絡先メールアドレス** を入力 → 届いた確認メールのリンクをクリック（未確認だと公開できません）。
-ストア上に表示するメールアドレスと、非公開の連絡先を分けて設定できます。
+`[設定]` ページで連絡先メールアドレスを入力し、確認メールのリンクをクリックしてください（未確認だと公開できません）。
 
 ---
 
@@ -104,36 +82,36 @@ Thank you for the review. This extension has a single purpose: detect HLS (m3u8)
 playlists on the page the user is viewing and convert them to MP4 using the user's
 locally installed ffmpeg.
 
-1) Host permissions: video pages exist on arbitrary domains, so an allow-list is not
-   possible. We read only (a) request URLs and (b) the first 64 bytes of a response
-   for URLs without a .m3u8 extension, solely to test whether it starts with #EXTM3U.
-   No page content, form data, or browsing history is collected, stored, or transmitted.
+Requested permissions (install time):
+- activeTab: we read the page only when the user clicks the toolbar icon. We collect
+  candidate URLs from performance entries and the page HTML. No background monitoring.
+- scripting: used to run that one-shot collection in the clicked tab.
+- storage: stores the user's settings locally (chrome.storage.local).
+- nativeMessaging: launches the user's own ffmpeg.exe through a local native host.
+  There is no developer server.
 
-2) nativeMessaging: used to launch the user's own ffmpeg.exe through a local native
-   host. All processing happens on the device; there is no developer server.
+Optional permissions (requested only on demand, never at install):
+- cookies: only when the user explicitly enables "pass cookies". Cookies of the current
+  site are handed to the local ffmpeg process and are never stored or transmitted.
+- host permissions: when a playlist URL has no .m3u8 extension and no mpegurl content
+  type, we must read the first 64 bytes of the response to test for #EXTM3U. On the
+  user's click we request only the specific origin(s) of the detected media host
+  (e.g. https://api.example.com/*). Declining still leaves manual URL / paste
+  conversion fully functional.
 
-3) cookies: optional and OFF by default. Only when the user explicitly enables
-   "pass cookies" do we read cookies of the current site and hand them to the local
-   ffmpeg process so that login-protected playlists can be fetched. They are never
-   stored or transmitted elsewhere.
-
-4) Data collection: none. Settings are stored locally in chrome.storage.local.
-   The extension contains no analytics, ads, or remote code.
+We do not use <all_urls>, webRequest or the tabs permission, and we collect no data.
 
 Privacy policy: https://crazykohei0123.github.io/m3u8-to-mp4/
 ```
 
 ---
 
-## 7. 補足: 権限を減らす選択肢（次バージョン案）
+## 7. 変更履歴（1.1.1 → 1.2.0）
 
-審査を軽くしたい場合、以下の変更で要求権限を減らせます。
-
-| 権限 | 代替案 | 影響 |
-|---|---|---|
-| `tabs` | 不要（`chrome.tabs.query` の `id` は権限なしで取得可能） | manifest から削除するだけでOK（要動作確認） |
-| `cookies` | `optional_permissions: ["cookies"]` にして、設定でONにした時に `chrome.permissions.request()` | インストール時の警告から外れる（実装変更が必要） |
-| `scripting` | 既にページ内に挿入している `content.js` へメッセージしてスキャンさせる | 「再スキャン」の実装変更が必要 |
-
-> 今回は**すでにアップロード済みのパッケージ**で審査を通すのが早道です。
-> 上記は次回アップデート時に検討してください。
+| 権限 | 変更 |
+|---|---|
+| `host_permissions: <all_urls>` | **削除**（任意権限＋activeTabへ） |
+| `webRequest` | **削除**（常時監視を廃止） |
+| `tabs` | **削除**（`tabs.query` の `id` は権限不要） |
+| `cookies` | 必須 → **任意**（ONにした時だけ要求） |
+| `activeTab` / `scripting` / `storage` / `nativeMessaging` | 継続 |

@@ -26,7 +26,7 @@ if (-not $manifest.version) { throw 'manifest.json に version がありませ�
 $version = $manifest.version
 
 # zip に入れてよいものだけを列挙（ホワイトリスト）
-$allowed = @('manifest.json', 'background.js', 'content.js', 'inject.js', 'popup.html', 'popup.css', 'popup.js', 'icons')
+$allowed = @('manifest.json', 'background.js', 'popup.html', 'popup.css', 'popup.js', 'lib', 'icons')
 $missing = @()
 foreach ($name in $allowed) {
     if (-not (Test-Path -LiteralPath (Join-Path $extDir $name))) {
