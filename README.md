@@ -167,6 +167,7 @@ stderr の `Duration:` から % を算出しています。
 
 | 症状 | 対処 |
 |---|---|
+| **「配信元へのアクセスを許可」を押してもダイアログが出ない** | その配信元は**すでに許可済み**です（`chrome.permissions.request` は既得権限ではダイアログを出しません）。取消したい場合は `vivaldi://extensions` → 拡張の「詳細」→ サイトアクセス から変更できます |
 | **拡張子なしのm3u8（`/channel_post_movies/982/streaming` 等）が `[未確認]` になる** | バナーの**「配信元へのアクセスを許可」**を押してください（`#EXTM3U` 判定に配信元originのホスト権限が必要）。許可しなくてもURLタブ／貼り付けタブで変換できます |
 | ヘッダが「接続エラー」/ ログに `Specified native messaging host not found` | `install.ps1` が未実行、または拡張IDが変わった。`install.ps1` を再実行（拡張フォルダのパスを変えるとIDも変わります） |
 | ホストは繋がるが ffmpeg が動かない | 設定の **ffmpeg のパス** を確認 → **確認** ボタンで `OK:` になるか。`native-host\launcher.log` にエラーが残ります |
