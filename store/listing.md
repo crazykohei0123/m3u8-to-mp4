@@ -1,6 +1,6 @@
 # Chrome ウェブストア 掲載情報（コピペ用）
 
-最終更新: 2026-11-17 / manifest version: 1.2.0
+最終更新: 2026-11-17 / manifest version: 1.2.1
 
 - 「プライバシーへの取り組み」タブの回答一式 → [`store/privacy-practices.md`](privacy-practices.md)
 
