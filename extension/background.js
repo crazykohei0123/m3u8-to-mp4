@@ -1,22 +1,30 @@
 'use strict';
 
 /*
- * m3u8 -> MP4 : background service worker
+ * m3u8 -> MP4 : background service worker（最小権限版）
  *
- *  1. webRequest でページが読む .m3u8 を検出して候補として保持
- *  2. popup からの依頼でネイティブホスト(com.local.m3u8mp4)へ ffmpeg 実行を委譲
- *  3. ホストからの進捗/ログを popup へ中継
- *
- * ネットワーク取得は ffmpeg が行うので、この拡張自身は .ts を fetch しない
- * (= CORS の影響を受けない)。
+ *  - 検出は「ポップアップを開いたとき（= activeTab が付与されたとき）」に
+ *    ページをスキャンして行う。常時監視はしない。
+ *  - URL に .m3u8 が無いプレイリストの検証（応答の先頭 #EXTM3U 判定）は、
+ *    配信元 origin の任意ホスト権限がある場合のみ service worker から fetch する。
+ *    権限が無い場合はポップアップ側で chrome.permissions.request() を出し、
+ *    許可後に再検証する（ページ文脈のCORSに依存しない）。
+ *  - 変換はローカルの ffmpeg が行うため、ブラウザの権限は不要。
  */
+
+importScripts('lib/detect.js');
+
+const D = self.M3U8Detect;
 
 const HOST_NAME = 'com.local.m3u8mp4';
 const MAX_PER_TAB = 15;
-const LOG_KEEP = 120;
+const PROBE_LIMIT = 8;
+const VERIFY_TTL = 15 * 60 * 1000;
 
-/** @type {Map<number, Array<{url: string, ts: number}>>} */
+/** @type {Map<number, Array<{url: string, ts: number, source: string, verify: string}>>} */
 const candidatesByTab = new Map();
+/** @type {Map<string, {status: string, ts: number}>} */
+const verifyCache = new Map();
 const uiPorts = new Set();
 
 let nativePort = null;
@@ -50,7 +58,7 @@ function broadcast(msg) {
 }
 
 function buildStateMessage() {
-  return { type: 'state', hostStatus, job: publicJob() };
+  return { type: 'state', hostStatus: hostStatus, job: publicJob(), extensionId: chrome.runtime.id };
 }
 
 function publicJob() {
@@ -65,13 +73,17 @@ function publicJob() {
     output: job.output,
     args: job.args,
     startedAt: job.startedAt,
-    log: job.log.slice(-LOG_KEEP)
+    log: job.log.slice(-120)
   };
 }
 
 function pushLog(line) {
   job.log.push(line);
-  if (job.log.length > LOG_KEEP) job.log.shift();
+  if (job.log.length > 120) job.log.shift();
+}
+
+function candidatesOf(tabId) {
+  return candidatesByTab.get(tabId) || [];
 }
 
 async function handleUiMessage(msg, port) {
@@ -81,15 +93,29 @@ async function handleUiMessage(msg, port) {
     case 'get-state':
       return safePost(port, buildStateMessage());
 
-    case 'get-candidates': {
-      const list = candidatesByTab.get(msg.tabId) || [];
-      return safePost(port, { type: 'candidates', tabId: msg.tabId, list });
-    }
+    case 'get-candidates':
+      return safePost(port, {
+        type: 'candidates', tabId: msg.tabId, list: candidatesOf(msg.tabId), needsPermission: collectNeedPermission(msg.tabId)
+      });
 
     case 'scan-page': {
-      const urls = await scanPage(msg.tabId);
-      ingestUrls(msg.tabId, urls);
-      return safePost(port, { type: 'candidates', tabId: msg.tabId, list: candidatesByTab.get(msg.tabId) || [], scanned: urls.length });
+      const result = await runScan(msg.tabId);
+      return safePost(port, {
+        type: 'scan-result',
+        tabId: msg.tabId,
+        scanned: result.scanned,
+        error: result.error,
+        needsPermission: result.needsPermission,
+        list: candidatesOf(msg.tabId)
+      });
+    }
+
+    case 'verify-pending': {
+      const result = await reverifyPending(msg.tabId);
+      return safePost(port, {
+        type: 'scan-result', tabId: msg.tabId, scanned: -1,
+        needsPermission: result.needsPermission, list: candidatesOf(msg.tabId)
+      });
     }
 
     case 'ping': {
@@ -129,163 +155,161 @@ async function handleUiMessage(msg, port) {
 }
 
 /* ------------------------------------------------------------------ */
-/* m3u8 候補の検出                                                     */
+/* 検出                                                               */
 /* ------------------------------------------------------------------ */
-const HINT_RE = /(m3u8|playlist|manifest|streaming|hls|master)/i;
-const MEDIA_RE = /\.(ts|m4s|mp4|m4a|mp3|aac|vtt|key|jpg|jpeg|png|gif|webp|avif|svg|ico|css|js|mjs|woff2?|ttf|map)(\?|#|$)/i;
-const PROBE_LIMIT_PER_TAB = 8;
-const VERIFY_TTL = 15 * 60 * 1000;
+function addCandidate(tabId, url, source, verify) {
+  if (typeof tabId !== 'number' || tabId < 0 || !url) return;
 
-const probeCount = new Map();   // tabId -> 応答検証の回数
-const verifyCache = new Map();  // url -> { ok, ts }
+  const list = candidatesOf(tabId);
+  const existing = list.find((c) => c.url === url);
 
-chrome.webRequest.onBeforeRequest.addListener((d) => {
-  if (d.tabId < 0 || !/^https?:/i.test(d.url)) return;
-
-  if (isPlaylistUrl(d.url)) {
-    addCandidate(d.tabId, d.url, 'url');
-    return;
-  }
-  // 拡張子なしのプレイリスト（例: /channel_post_movies/982/streaming）
-  if ((d.type === 'xmlhttprequest' || d.type === 'other') && isPlaylistHint(d.url)) {
-    probeCandidate(d.tabId, d.url);
-  }
-}, { urls: ['<all_urls>'] });
-
-function isPlaylistUrl(url) {
-  return /\.m3u8(\?|#|$)/i.test(url) || /[?&](format|type|ext)=m3u8\b/i.test(url);
-}
-
-function isPlaylistHint(url) {
-  if (!url || MEDIA_RE.test(url)) return false;
-  return HINT_RE.test(url);
-}
-
-/* ページ内フック(MAIN world)や content.js からの通知 */
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  const tabId = sender && sender.tab && typeof sender.tab.id === 'number' ? sender.tab.id : -1;
-  if (!msg || tabId < 0) return;
-
-  if (msg.type === 'page-playlist' && typeof msg.url === 'string') {
-    if (/^https?:/i.test(msg.url)) addCandidate(tabId, msg.url, 'hook');
-    sendResponse({ ok: true });
-    return;
-  }
-
-  if (msg.type === 'page-hints' && Array.isArray(msg.urls)) {
-    ingestUrls(tabId, msg.urls);
-    sendResponse({ ok: true });
-  }
-});
-
-/* URL一覧を取り込み、必要なら応答本文を検証する */
-function ingestUrls(tabId, urls) {
-  let probes = 0;
-  for (const u of urls.slice(0, 40)) {
-    if (typeof u !== 'string' || !/^https?:/i.test(u)) continue;
-    if (isPlaylistUrl(u)) addCandidate(tabId, u, 'url');
-    else if (isPlaylistHint(u) && probes < PROBE_LIMIT_PER_TAB) {
-      probes++;
-      probeCandidate(tabId, u);
+  if (existing) {
+    if (verify && existing.verify !== verify) {
+      existing.verify = verify;
+      broadcast({ type: 'candidates', tabId: tabId, list: list, needsPermission: collectNeedPermission(tabId) });
     }
+    return;
   }
+
+  list.unshift({ url: url, ts: Date.now(), source: source || 'hint', verify: verify || 'assumed' });
+  if (list.length > MAX_PER_TAB) list.length = MAX_PER_TAB;
+  candidatesByTab.set(tabId, list);
+  broadcast({ type: 'candidates', tabId: tabId, list: list, needsPermission: collectNeedPermission(tabId) });
 }
 
-/* 応答の先頭だけを読んで #EXTM3U か判定（ホスト権限があるのでCORSは適用外） */
-async function verifyPlaylist(url) {
-  const cached = verifyCache.get(url);
-  if (cached && Date.now() - cached.ts < VERIFY_TTL) return cached.ok;
+function removeCandidate(tabId, url) {
+  const list = candidatesOf(tabId);
+  const i = list.findIndex((c) => c.url === url);
+  if (i < 0) return;
+  list.splice(i, 1);
+  broadcast({ type: 'candidates', tabId: tabId, list: list, needsPermission: collectNeedPermission(tabId) });
+}
 
-  let ok = false;
+/* 許可を求めるとよい origin の一覧（未検証の候補から作る） */
+function collectNeedPermission(tabId) {
+  const out = [];
+  for (const c of candidatesOf(tabId)) {
+    if (c.verify !== 'need-permission') continue;
+    const p = D.originPattern(c.url);
+    if (p && out.indexOf(p) < 0) out.push(p);
+  }
+  return out;
+}
+
+/* 応答の先頭64バイトから #EXTM3U を判定する。
+   配信元 origin のホスト権限が無いと fetch が CORS で失敗するため、
+   その場合は 'need-permission' を返してポップアップに許可ボタンを出させる。 */
+async function verifyUrl(url) {
+  const cached = verifyCache.get(url);
+  if (cached && Date.now() - cached.ts < VERIFY_TTL) return cached.status;
+
+  const pattern = D.originPattern(url);
+  if (!pattern) return 'error';
+
+  let status;
   try {
     const res = await fetch(url, { credentials: 'include', cache: 'no-store' });
-    if (res.ok && res.body) {
+    if (!res.ok || !res.body) {
+      status = 'no';
+    } else {
       const reader = res.body.getReader();
       const first = await reader.read();
       try { reader.cancel(); } catch (e) { /* ignore */ }
       const bytes = first && first.value ? first.value.slice(0, 64) : new Uint8Array(0);
-      const head = new TextDecoder('utf-8').decode(bytes).replace(/^\uFEFF/, '').replace(/^\s+/, '');
-      ok = head.indexOf('#EXTM3U') === 0;
+      status = D.looksLikePlaylistText(new TextDecoder('utf-8').decode(bytes)) ? 'ok' : 'no';
     }
   } catch (e) {
-    ok = false;
+    let granted = false;
+    try {
+      granted = await chrome.permissions.contains({ origins: [pattern] });
+    } catch (e2) {
+      granted = false;
+    }
+    status = granted ? 'error' : 'need-permission';
   }
 
-  verifyCache.set(url, { ok: ok, ts: Date.now() });
+  verifyCache.set(url, { status: status, ts: Date.now() });
   if (verifyCache.size > 300) {
     const old = Array.from(verifyCache.entries()).sort((a, b) => a[1].ts - b[1].ts).slice(0, 100);
     for (const pair of old) verifyCache.delete(pair[0]);
   }
-  return ok;
+  return status;
 }
 
-async function probeCandidate(tabId, url) {
-  const list = candidatesByTab.get(tabId) || [];
-  if (list.some((c) => c.url === url)) return;
+async function runScan(tabId) {
+  if (typeof tabId !== 'number') return { scanned: 0, error: 'no-tab', needsPermission: [] };
 
-  const used = probeCount.get(tabId) || 0;
-  if (used >= PROBE_LIMIT_PER_TAB) return;
-  probeCount.set(tabId, used + 1);
+  let urls = [];
+  let error = null;
+  try {
+    urls = await scanPage(tabId);
+  } catch (e) {
+    error = (e && e.message) || 'scan failed';
+    urls = [];
+  }
 
-  if (await verifyPlaylist(url)) addCandidate(tabId, url, 'sniff');
+  const picked = D.classify(urls, 40);
+
+  candidatesByTab.delete(tabId);
+  broadcast({ type: 'candidates', tabId: tabId, list: [], needsPermission: [] });
+
+  for (const u of picked.playlists) addCandidate(tabId, u, 'url', 'assumed');
+
+  const hints = picked.hints.slice(0, PROBE_LIMIT);
+  const statuses = await Promise.all(hints.map((u) => verifyUrl(u)));
+
+  for (let i = 0; i < hints.length; i++) {
+    if (statuses[i] === 'no') continue;
+    addCandidate(tabId, hints[i], 'hint', statuses[i]);
+  }
+
+  return { scanned: urls.length, error: error, needsPermission: collectNeedPermission(tabId) };
+}
+
+/* 権限が付与された後、未検証の候補だけを再検証する */
+async function reverifyPending(tabId) {
+  const pending = candidatesOf(tabId).filter((c) => c.verify === 'need-permission');
+  for (const c of pending) verifyCache.delete(c.url);
+
+  const statuses = await Promise.all(pending.map((c) => verifyUrl(c.url)));
+
+  for (let i = 0; i < pending.length; i++) {
+    if (statuses[i] === 'no') removeCandidate(tabId, pending[i].url);
+    else addCandidate(tabId, pending[i].url, 'hint', statuses[i]);
+  }
+  return { needsPermission: collectNeedPermission(tabId) };
+}
+
+/* ポップアップを開いた時点の activeTab でページを走査する */
+async function scanPage(tabId) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tabId },
+    func: () => {
+      const out = [];
+      const push = (u) => {
+        if (u && out.indexOf(u) < 0 && out.length < 60) out.push(u);
+      };
+      try {
+        for (const e of performance.getEntriesByType('resource')) push(e.name);
+      } catch (e) { /* ignore */ }
+      try {
+        const html = document.documentElement ? document.documentElement.innerHTML : '';
+        const re = /https?:\/\/[^\s"'<>\\]+?\.m3u8[^\s"'<>\\]*/g;
+        let m;
+        while ((m = re.exec(html)) !== null) push(m[0]);
+      } catch (e) { /* ignore */ }
+      return out;
+    }
+  });
+  return (results && results[0] && results[0].result) || [];
 }
 
 /* ページ遷移したら候補をリセット */
 chrome.tabs.onUpdated.addListener((tabId, info) => {
-  if (info.status !== 'loading') return;
+  if (!info || info.status !== 'loading') return;
   candidatesByTab.delete(tabId);
-  probeCount.delete(tabId);
-  broadcast({ type: 'candidates', tabId: tabId, list: [] });
+  broadcast({ type: 'candidates', tabId: tabId, list: [], needsPermission: [] });
 });
-
-function addCandidate(tabId, url, source) {
-  if (typeof tabId !== 'number' || tabId < 0 || !url) return;
-
-  const list = candidatesByTab.get(tabId) || [];
-  const existing = list.find((c) => c.url === url);
-
-  if (existing) {
-    // より確度の高い検出（hook/sniff）で上書き
-    if (source && existing.source !== source) {
-      existing.source = source;
-      broadcast({ type: 'candidates', tabId: tabId, list: list });
-    }
-    return;
-  }
-
-  list.unshift({ url: url, ts: Date.now(), source: source || 'url' });
-  if (list.length > MAX_PER_TAB) list.length = MAX_PER_TAB;
-  candidatesByTab.set(tabId, list);
-  broadcast({ type: 'candidates', tabId: tabId, list: list });
-}
-
-/* ページ内のHTML/リソースから候補URLを集める（判定は service worker 側） */
-async function scanPage(tabId) {
-  if (typeof tabId !== 'number') return [];
-  try {
-    const results = await chrome.scripting.executeScript({
-      target: { tabId: tabId },
-      func: () => {
-        const found = [];
-        const push = (u) => {
-          if (u && found.indexOf(u) < 0 && found.length < 40) found.push(u);
-        };
-        const re = /https?:\/\/[^\s"'<>\\]+?\.m3u8[^\s"'<>\\]*/g;
-        const html = document.documentElement ? document.documentElement.innerHTML : '';
-        let m;
-        while ((m = re.exec(html)) !== null) push(m[0]);
-        try {
-          for (const e of performance.getEntriesByType('resource')) push(e.name);
-        } catch (e) { /* ignore */ }
-        return found;
-      }
-    });
-    return (results && results[0] && results[0].result) || [];
-  } catch (e) {
-    return [];
-  }
-}
-
 
 /* ------------------------------------------------------------------ */
 /* ネイティブホストとの通信                                            */
@@ -352,7 +376,7 @@ function onHostMessage(msg) {
       broadcast({ type: 'progress', job: publicJob() });
       return;
 
-    case 'progress': {
+    case 'progress':
       job.percent = msg.percent;
       job.outTimeMs = msg.outTimeMs || 0;
       job.size = msg.size || 0;
@@ -361,7 +385,6 @@ function onHostMessage(msg) {
       setBadge(job.percent);
       broadcast({ type: 'progress', job: publicJob() });
       return;
-    }
 
     case 'log':
       pushLog(msg.line);
@@ -458,12 +481,22 @@ async function startJob(msg) {
   port.postMessage(payload);
 }
 
+/* cookies は任意権限。許可されていて、そのURLにアクセスできる場合のみ取得できる */
 async function collectCookies(input) {
+  if (!chrome.cookies) return '';
+
   let url = null;
   if (input && input.kind === 'url') url = input.url;
   else if (input && input.baseUrl) url = input.baseUrl;
-
   if (!url) return '';
+
+  try {
+    const has = await chrome.permissions.contains({ permissions: ['cookies'] });
+    if (!has) return '';
+  } catch (e) {
+    return '';
+  }
+
   try {
     const list = await chrome.cookies.getAll({ url: url });
     return list.map((c) => c.name + '=' + c.value).join('; ');

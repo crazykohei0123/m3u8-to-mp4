@@ -111,6 +111,27 @@ select option { padding: 3px 4px; }
 
 .pane { margin-bottom: 8px; }
 
+/* 配信元の権限を求めるバナー */
+.perm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  padding: 7px 9px;
+  background: rgba(210, 153, 34, .12);
+  border: 1px solid #9e6a03;
+  border-radius: 7px;
+}
+.perm-text {
+  flex: 1;
+  color: #e3b341;
+  font-size: 11px;
+  line-height: 1.4;
+  word-break: break-all;
+}
+.perm .ghost { flex: none; border-color: #9e6a03; color: #e3b341; }
+.perm .ghost:hover { border-color: #e3b341; }
+
 /* buttons */
 button { font-family: inherit; cursor: pointer; }
 button.primary {
